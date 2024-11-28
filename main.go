@@ -1,10 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -37,23 +38,32 @@ func (s *Session) listen() {
 		s.conn.Close()
 	}()
 
-	time.Sleep(30 * time.Second)
+	buffer := make([]byte, 1024)
+
+	r := bufio.NewReader(s.conn)
+	n, err := r.Read(buffer)
+	if err != nil {
+		fmt.Printf("error reading: %v\n", err)
+		return
+	}
+
+	m := binary.LittleEndian.Uint16(buffer[:2])
+
+	fmt.Printf("[%v] read %v bytes: %v\n", m, n, string(buffer[:n]))
 }
 
 func (s *Server) Start() {
 	listener, err := net.Listen("tcp", "localhost:8080")
 	if err != nil {
-		fmt.Printf("error starting listener: %v", err)
+		fmt.Printf("error starting listener: %v\n", err)
 		return
 	}
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Printf("error accepting connection: %v", err)
+			fmt.Printf("error accepting connection: %v\n", err)
 			continue
 		}
-
-		fmt.Printf("connections: %v\n", s.connections)
 
 		session := NewSession(conn)
 		go func() {

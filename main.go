@@ -3,13 +3,15 @@ package main
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 type Server struct {
-	connections map[uuid.UUID]*Session
+	connections     map[uuid.UUID]*Session
+	connectionsLock sync.Mutex
 }
 
 func NewServer() *Server {
@@ -35,7 +37,7 @@ func (s *Session) listen() {
 		s.conn.Close()
 	}()
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(30 * time.Second)
 }
 
 func (s *Server) Start() {
@@ -51,8 +53,20 @@ func (s *Server) Start() {
 			continue
 		}
 
+		fmt.Printf("connections: %v\n", s.connections)
+
 		session := NewSession(conn)
-		go session.listen()
+		go func() {
+			s.connectionsLock.Lock()
+			s.connections[session.id] = session
+			s.connectionsLock.Unlock()
+			defer func() {
+				s.connectionsLock.Lock()
+				delete(s.connections, session.id)
+				s.connectionsLock.Unlock()
+			}()
+			session.listen()
+		}()
 	}
 }
 

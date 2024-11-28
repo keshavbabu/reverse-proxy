@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -37,19 +36,31 @@ func (s *Session) listen() {
 	defer func() {
 		s.conn.Close()
 	}()
-
-	buffer := make([]byte, 1024)
+	/*
+	 * if you're sending a packet with more than 65536 bytes
+	 * then you should reallt rethink what you're doing
+	 * */
+	buffer := make([]byte, 2<<16)
 
 	r := bufio.NewReader(s.conn)
-	n, err := r.Read(buffer)
-	if err != nil {
-		fmt.Printf("error reading: %v\n", err)
-		return
+	tmp := make([]byte, 2<<12)
+	for {
+		n, err := r.Read(tmp)
+		if err != nil {
+			fmt.Printf("error reading: %v\n", err)
+			break
+		}
+
+		buffer = append(buffer, tmp[:n]...)
+
+		// if we ever read anything less than the max break
+		if n < 2<<12 {
+			break
+		}
 	}
 
-	m := binary.LittleEndian.Uint16(buffer[:2])
-
-	fmt.Printf("[%v] read %v bytes: %v\n", m, n, string(buffer[:n]))
+	st := string(buffer)
+	fmt.Printf("last: %v\n", len(st))
 }
 
 func (s *Server) Start() {

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
+	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 )
 
@@ -127,8 +130,93 @@ func (s *Session) handleRequest(
 	server.NewConnection(NewConnectionRequest(request.raw, &reader, &s.conn))
 }
 
+type ServerConfig struct {
+	Host          string `toml:"host"`
+	DownstreamURL string `toml:"downstream-url"`
+}
+
+type Config struct {
+	Servers map[string]ServerConfig `toml:"servers"`
+}
+
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func main() {
+	home, ok := os.LookupEnv("HOME")
+	if !ok {
+		fmt.Println("env var HOME not set")
+		return
+	}
+
+	configfp := fmt.Sprintf("%s/.config/reverse-proxy", home)
+	err := os.MkdirAll(configfp, os.ModePerm)
+	if err != nil {
+		fmt.Printf("error making config dir: %v", err)
+		return
+	}
+
 	servers := make(map[string]*Server)
+
+	go func() {
+		w, err := fsnotify.NewWatcher()
+		if err != nil {
+			fmt.Println("error making fs watcher", err)
+			return
+		}
+		defer w.Close()
+
+		err = w.Add(configfp)
+		if err != nil {
+			fmt.Println("error adding config path:", err)
+			return
+		}
+
+		for {
+			select {
+			case e, ok := <-w.Events:
+				if !ok {
+					break
+				}
+
+				file := e.Name[len(configfp):]
+				if file == "/config.toml" && e.Op.Has(fsnotify.Chmod) {
+					// run the reload here
+					fmt.Println("reloading config.toml")
+					d, err := os.ReadFile(e.Name)
+					if err != nil {
+						fmt.Println("error reading file:", err)
+						continue
+					}
+					cfg := Config{}
+					_, err = toml.Decode(string(d), &cfg)
+					if err != nil {
+						fmt.Println("error decoding toml:", err)
+						continue
+					}
+					newServers := make(map[string]*Server)
+					for _, server := range cfg.Servers {
+						newServers[server.Host] = NewServer(server.Host, server.DownstreamURL)
+					}
+					servers = newServers
+					continue
+				}
+			case err, ok := <-w.Errors:
+				if !ok {
+					break
+				}
+				fmt.Println("[fs-error]", err)
+			}
+		}
+	}()
 
 	servers["api.keshavbabu.com"] = NewServer("api.keshavbabu.com", "localhost:8081")
 	servers["keshavbabu.com"] = NewServer("keshavbabu.com", "localhost:8082")

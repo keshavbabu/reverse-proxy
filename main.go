@@ -148,6 +148,24 @@ func exists(path string) (bool, error) {
 	return false, err
 }
 
+func ReadConfig(configfp string) (*map[string]*Server, error) {
+	d, err := os.ReadFile(configfp)
+	if err != nil {
+		return nil, fmt.Errorf("error reading file: %v", err)
+	}
+	cfg := Config{}
+	_, err = toml.Decode(string(d), &cfg)
+	if err != nil {
+		fmt.Println("error decoding toml:", err)
+		return nil, fmt.Errorf("error decoding toml: %v", err)
+	}
+	newServers := make(map[string]*Server)
+	for _, server := range cfg.Servers {
+		newServers[server.Host] = NewServer(server.Host, server.DownstreamURL)
+	}
+	return &newServers, nil
+}
+
 func main() {
 	home, ok := os.LookupEnv("HOME")
 	if !ok {
@@ -163,6 +181,15 @@ func main() {
 	}
 
 	servers := make(map[string]*Server)
+	ex, err := exists(configfp + "/config.toml")
+	if err == nil && ex {
+		s, err := ReadConfig(configfp + "/config.toml")
+		if err == nil {
+			servers = *s
+		} else {
+			fmt.Println("error reading config:", err)
+		}
+	}
 
 	go func() {
 		w, err := fsnotify.NewWatcher()
@@ -189,23 +216,12 @@ func main() {
 				if file == "/config.toml" && e.Op.Has(fsnotify.Chmod) {
 					// run the reload here
 					fmt.Println("reloading config.toml")
-					d, err := os.ReadFile(e.Name)
+					s, err := ReadConfig(e.Name)
 					if err != nil {
-						fmt.Println("error reading file:", err)
+						fmt.Println("error reading config:", err)
 						continue
 					}
-					cfg := Config{}
-					_, err = toml.Decode(string(d), &cfg)
-					if err != nil {
-						fmt.Println("error decoding toml:", err)
-						continue
-					}
-					newServers := make(map[string]*Server)
-					for _, server := range cfg.Servers {
-						newServers[server.Host] = NewServer(server.Host, server.DownstreamURL)
-					}
-					servers = newServers
-					continue
+					servers = *s
 				}
 			case err, ok := <-w.Errors:
 				if !ok {

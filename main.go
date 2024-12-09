@@ -5,19 +5,16 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"sync"
 
-	"github.com/BurntSushi/toml"
-	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 )
 
 type Session struct {
-	id      uuid.UUID
-	conn    net.Conn
-	servers map[string]*Server
+	id     uuid.UUID
+	conn   net.Conn
+	config *Config
 }
 
 type Request struct {
@@ -51,12 +48,12 @@ func NewRequest(
 
 func NewSession(
 	conn net.Conn,
-	servers map[string]*Server,
+	config *Config,
 ) *Session {
 	return &Session{
-		id:      uuid.New(),
-		conn:    conn,
-		servers: servers,
+		id:     uuid.New(),
+		conn:   conn,
+		config: config,
 	}
 }
 
@@ -120,7 +117,7 @@ func (s *Session) handleRequest(
 	request Request,
 	reader io.Reader,
 ) {
-	server, ok := s.servers[request.Host]
+	server, ok := s.config.GetServerForHost(request.Host)
 	if !ok {
 		fmt.Printf("host not found: %v", request.Host)
 		return
@@ -128,109 +125,14 @@ func (s *Session) handleRequest(
 	server.NewConnection(NewConnectionRequest(request.raw, &reader, &s.conn))
 }
 
-type ServerConfig struct {
-	Host          string `toml:"host"`
-	DownstreamURL string `toml:"downstream-url"`
-}
-
-type Config struct {
-	Servers map[string]ServerConfig `toml:"servers"`
-}
-
-func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-
-func ReadConfig(configfp string) (*map[string]*Server, error) {
-	d, err := os.ReadFile(configfp)
-	if err != nil {
-		return nil, fmt.Errorf("error reading file: %v", err)
-	}
-	cfg := Config{}
-	_, err = toml.Decode(string(d), &cfg)
-	if err != nil {
-		fmt.Println("error decoding toml:", err)
-		return nil, fmt.Errorf("error decoding toml: %v", err)
-	}
-	newServers := make(map[string]*Server)
-	for _, server := range cfg.Servers {
-		newServers[server.Host] = NewServer(server.Host, server.DownstreamURL)
-	}
-	return &newServers, nil
-}
-
 func main() {
-	home, ok := os.LookupEnv("HOME")
-	if !ok {
-		fmt.Println("env var HOME not set")
-		return
-	}
-
-	configfp := fmt.Sprintf("%s/.config/reverse-proxy", home)
-	err := os.MkdirAll(configfp, os.ModePerm)
+	cfg, err := NewConfig()
 	if err != nil {
-		fmt.Printf("error making config dir: %v", err)
+		fmt.Printf("error making config: %v", err)
 		return
 	}
 
-	servers := make(map[string]*Server)
-	ex, err := exists(configfp + "/config.toml")
-	if err == nil && ex {
-		s, err := ReadConfig(configfp + "/config.toml")
-		if err == nil {
-			servers = *s
-		} else {
-			fmt.Println("error reading config:", err)
-		}
-	}
-
-	go func() {
-		w, err := fsnotify.NewWatcher()
-		if err != nil {
-			fmt.Println("error making fs watcher", err)
-			return
-		}
-		defer w.Close()
-
-		err = w.Add(configfp)
-		if err != nil {
-			fmt.Println("error adding config path:", err)
-			return
-		}
-
-		for {
-			select {
-			case e, ok := <-w.Events:
-				if !ok {
-					break
-				}
-
-				file := e.Name[len(configfp):]
-				if file == "/config.toml" && e.Op.Has(fsnotify.Chmod) {
-					// run the reload here
-					fmt.Println("reloading config.toml")
-					s, err := ReadConfig(e.Name)
-					if err != nil {
-						fmt.Println("error reading config:", err)
-						continue
-					}
-					servers = *s
-				}
-			case err, ok := <-w.Errors:
-				if !ok {
-					break
-				}
-				fmt.Println("[fs-error]", err)
-			}
-		}
-	}()
+	go cfg.Start()
 
 	connections := make(map[uuid.UUID]*Session)
 	var connectionsLock sync.Mutex
@@ -247,7 +149,7 @@ func main() {
 			continue
 		}
 
-		session := NewSession(conn, servers)
+		session := NewSession(conn, cfg)
 		go func() {
 			connectionsLock.Lock()
 			connections[session.id] = session

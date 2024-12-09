@@ -14,8 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// a downstream serve
-
 type Session struct {
 	id      uuid.UUID
 	conn    net.Conn
@@ -217,9 +215,6 @@ func main() {
 			}
 		}
 	}()
-
-	servers["api.keshavbabu.com"] = NewServer("api.keshavbabu.com", "localhost:8081")
-	servers["keshavbabu.com"] = NewServer("keshavbabu.com", "localhost:8082")
 
 	connections := make(map[uuid.UUID]*Session)
 	var connectionsLock sync.Mutex
